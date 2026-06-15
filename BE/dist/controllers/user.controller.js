@@ -20,11 +20,12 @@ exports.UserController = {
                 ...req.body,
                 otp,
                 otpExpires,
-                isVerified: true
+                isVerified: false
             });
             await user.save();
+            // Gửi email OTP
             await (0, emailService_1.sendEmailTemplate)(user.email, 'Xác thực tài khoản của bạn', 'otpTemplate', {
-                DISPLAY_NAME: user.displayName,
+                DISPLAY_NAME: user.displayName || 'Khách hàng',
                 OTP_CODE: otp
             });
             res.status(201).json({
@@ -175,7 +176,7 @@ exports.UserController = {
                 return res.status(400).json({ success: false, message: "Invalid email or password" });
             }
             if (!user.isVerified) {
-                return res.status(403).json({ success: false, message: "Please verify your email first" });
+                return res.status(403).json({ success: false, message: "Vui lòng xác thực email trước khi đăng nhập" });
             }
             const token = jsonwebtoken_1.default.sign({ userId: user.userId, email: user.email, role: user.role }, process.env.JWT_SECRET, { expiresIn: '1d' });
             res.json({
@@ -195,8 +196,17 @@ exports.UserController = {
     },
     loginwithgoogle: async (req, res) => {
         try {
-            const { email, displayName, avatar, image } = req.body;
-            const profileImage = image || avatar;
+            const { idToken } = req.body;
+            if (!idToken) {
+                return res.status(400).json({ success: false, message: "Missing idToken" });
+            }
+            const decoded = jsonwebtoken_1.default.decode(idToken);
+            if (!decoded || !decoded.email) {
+                return res.status(400).json({ success: false, message: "Invalid idToken" });
+            }
+            const email = decoded.email;
+            const displayName = decoded.name || email.split('@')[0];
+            const profileImage = decoded.picture;
             let user = await user_model_1.default.findOne({ email });
             if (!user) {
                 user = new user_model_1.default({

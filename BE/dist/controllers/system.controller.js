@@ -46,6 +46,10 @@ exports.SystemController = {
                         points_per_vnpay_1000: 1,
                         points_daily_login: 10,
                         points_review_bonus: 50,
+                        commission_hotel_owner_percent: 90,
+                        commission_hotel_admin_percent: 10,
+                        commission_trip_creator_percent: 70,
+                        commission_trip_admin_percent: 30,
                     }
                 });
             }
@@ -81,114 +85,15 @@ exports.SystemController = {
             const Booking = require('../models/booking.model').default;
             const Order = require('../models/order.model').default;
             const CreatorSubscriptionTransaction = require('../models/creatorSubscriptionTransaction.model').default;
+            const Hotel = require('../models/hotel.model').default;
+            const HotelRequest = require('../models/hotelRequest.model').default;
+            const WithdrawalRequest = require('../models/withdrawalRequest.model').default;
+            const Wallet = require('../models/wallet.model').default;
             const now = new Date();
             const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
             const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
             const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
-            // --- 1. Tổng người dùng ---
-            const totalUsers = await User.countDocuments();
-            const usersLastMonth = await User.countDocuments({ createdAt: { $lt: startOfMonth } });
-            const usersChange = usersLastMonth > 0 ? Math.round(((totalUsers - usersLastMonth) / usersLastMonth) * 100) : 0;
-            // --- 2. Chuyến đi tháng này ---
-            const tripsThisMonth = await Trip.countDocuments({ createdAt: { $gte: startOfMonth } });
-            const tripsLastMonth = await Trip.countDocuments({ createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } });
-            const tripsChange = tripsLastMonth > 0 ? Math.round(((tripsThisMonth - tripsLastMonth) / tripsLastMonth) * 100) : 0;
-            // --- 3. Doanh thu (Bookings paid + Orders SUCCESS + Creator subscriptions success) ---
-            const bookingRevenue = await Booking.aggregate([
-                { $match: { paymentStatus: 'paid' } },
-                { $group: { _id: null, total: { $sum: '$totalPrice' } } }
-            ]);
-            const orderRevenue = await Order.aggregate([
-                { $match: { status: 'SUCCESS' } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]);
-            const creatorRevenue = await CreatorSubscriptionTransaction.aggregate([
-                { $match: { status: 'success' } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]);
-            const totalRevenue = (bookingRevenue[0]?.total || 0) +
-                (orderRevenue[0]?.total || 0) +
-                (creatorRevenue[0]?.total || 0);
-            // Revenue this month
-            const bookingRevenueThisMonth = await Booking.aggregate([
-                { $match: { paymentStatus: 'paid', createdAt: { $gte: startOfMonth } } },
-                { $group: { _id: null, total: { $sum: '$totalPrice' } } }
-            ]);
-            const orderRevenueThisMonth = await Order.aggregate([
-                { $match: { status: 'SUCCESS', createdAt: { $gte: startOfMonth } } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]);
-            const creatorRevenueThisMonth = await CreatorSubscriptionTransaction.aggregate([
-                { $match: { status: 'success', createdAt: { $gte: startOfMonth } } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]);
-            const revenueThisMonth = (bookingRevenueThisMonth[0]?.total || 0) +
-                (orderRevenueThisMonth[0]?.total || 0) +
-                (creatorRevenueThisMonth[0]?.total || 0);
-            // Revenue last month
-            const bookingRevenueLastMonth = await Booking.aggregate([
-                { $match: { paymentStatus: 'paid', createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
-                { $group: { _id: null, total: { $sum: '$totalPrice' } } }
-            ]);
-            const orderRevenueLastMonth = await Order.aggregate([
-                { $match: { status: 'SUCCESS', createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]);
-            const creatorRevenueLastMonth = await CreatorSubscriptionTransaction.aggregate([
-                { $match: { status: 'success', createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]);
-            const revLastMonth = (bookingRevenueLastMonth[0]?.total || 0) +
-                (orderRevenueLastMonth[0]?.total || 0) +
-                (creatorRevenueLastMonth[0]?.total || 0);
-            const revenueChange = revLastMonth > 0 ? Math.round(((revenueThisMonth - revLastMonth) / revLastMonth) * 100) : 0;
-            // --- 4. Tổng booking ---
-            const totalBookings = await Booking.countDocuments();
-            const bookingsThisMonth = await Booking.countDocuments({ createdAt: { $gte: startOfMonth } });
-            const bookingsLastMonth = await Booking.countDocuments({ createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } });
-            const bookingsChange = bookingsLastMonth > 0 ? Math.round(((bookingsThisMonth - bookingsLastMonth) / bookingsLastMonth) * 100) : 0;
-            // --- 5. Recent bookings ---
-            const recentBookings = await Booking.find()
-                .sort({ createdAt: -1 })
-                .limit(5)
-                .lean();
-            // Populate user info
-            const Hotel = require('../models/hotel.model').default;
-            const populatedBookings = await Promise.all(recentBookings.map(async (b) => {
-                const user = await User.findOne({ userId: b.userId }).lean();
-                const hotel = await Hotel.findOne({ hotelId: b.hotelId }).lean();
-                return {
-                    id: b.bookingId,
-                    user: user?.displayName || b.guestInfo?.fullName || 'N/A',
-                    destination: hotel?.name || 'N/A',
-                    date: new Date(b.createdAt).toLocaleDateString('vi-VN'),
-                    amount: b.totalPrice,
-                    status: b.status === 'confirmed' || b.status === 'completed' ? 'Hoàn thành'
-                        : b.status === 'pending' ? 'Đang xử lý'
-                            : b.status === 'cancelled' ? 'Hủy' : b.status,
-                };
-            }));
-            // --- 6. Monthly revenue chart (12 months) ---
-            const monthlyRevenue = [];
-            for (let i = 11; i >= 0; i--) {
-                const mStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
-                const mEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
-                const bRev = await Booking.aggregate([
-                    { $match: { paymentStatus: 'paid', createdAt: { $gte: mStart, $lte: mEnd } } },
-                    { $group: { _id: null, total: { $sum: '$totalPrice' } } }
-                ]);
-                const oRev = await Order.aggregate([
-                    { $match: { status: 'SUCCESS', createdAt: { $gte: mStart, $lte: mEnd } } },
-                    { $group: { _id: null, total: { $sum: '$amount' } } }
-                ]);
-                const cRev = await CreatorSubscriptionTransaction.aggregate([
-                    { $match: { status: 'success', createdAt: { $gte: mStart, $lte: mEnd } } },
-                    { $group: { _id: null, total: { $sum: '$amount' } } }
-                ]);
-                monthlyRevenue.push((bRev[0]?.total || 0) + (oRev[0]?.total || 0) + (cRev[0]?.total || 0));
-            }
-            // --- 7. Admin System Wallet balance ---
-            const Wallet = require('../models/wallet.model').default;
+            const startOf12MonthsAgo = new Date(now.getFullYear(), now.getMonth() - 11, 1);
             // Drop stale unique index on userId if exists (one-time fix)
             try {
                 await Wallet.collection.dropIndex('userId_1');
@@ -196,23 +101,160 @@ exports.SystemController = {
             catch (e) {
                 // index already dropped or doesn't exist, ignore
             }
-            const adminWallet = await Wallet.findOne({ isSystem: true });
+            // Execute all base statistics and aggregations in parallel (reducing roundtrips from ~68 to just 2)
+            const [totalUsers, usersLastMonth, totalHotels, hotelsLastMonth, pendingHotelRequests, pendingWithdrawals, tripsThisMonth, tripsLastMonth, bookingRevenue, orderRevenue, creatorRevenue, bookingRevenueThisMonth, orderRevenueThisMonth, creatorRevenueThisMonth, bookingRevenueLastMonth, orderRevenueLastMonth, creatorRevenueLastMonth, totalBookings, bookingsThisMonth, bookingsLastMonth, recentBookings, bMonthly, oMonthly, cMonthly, adminWallet] = await Promise.all([
+                User.countDocuments(),
+                User.countDocuments({ createdAt: { $lt: startOfMonth } }),
+                Hotel.countDocuments(),
+                Hotel.countDocuments({ createdAt: { $lt: startOfMonth } }),
+                HotelRequest.countDocuments({ status: 'pending' }),
+                WithdrawalRequest.countDocuments({ status: 'pending' }),
+                Trip.countDocuments({ createdAt: { $gte: startOfMonth } }),
+                Trip.countDocuments({ createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } }),
+                Booking.aggregate([
+                    { $match: { paymentStatus: 'paid' } },
+                    { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+                ]),
+                Order.aggregate([
+                    { $match: { status: 'SUCCESS' } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } }
+                ]),
+                CreatorSubscriptionTransaction.aggregate([
+                    { $match: { status: 'success' } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } }
+                ]),
+                Booking.aggregate([
+                    { $match: { paymentStatus: 'paid', createdAt: { $gte: startOfMonth } } },
+                    { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+                ]),
+                Order.aggregate([
+                    { $match: { status: 'SUCCESS', createdAt: { $gte: startOfMonth } } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } }
+                ]),
+                CreatorSubscriptionTransaction.aggregate([
+                    { $match: { status: 'success', createdAt: { $gte: startOfMonth } } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } }
+                ]),
+                Booking.aggregate([
+                    { $match: { paymentStatus: 'paid', createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
+                    { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+                ]),
+                Order.aggregate([
+                    { $match: { status: 'SUCCESS', createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } }
+                ]),
+                CreatorSubscriptionTransaction.aggregate([
+                    { $match: { status: 'success', createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } } },
+                    { $group: { _id: null, total: { $sum: '$amount' } } }
+                ]),
+                Booking.countDocuments(),
+                Booking.countDocuments({ createdAt: { $gte: startOfMonth } }),
+                Booking.countDocuments({ createdAt: { $gte: startOfLastMonth, $lte: endOfLastMonth } }),
+                Booking.find().sort({ createdAt: -1 }).limit(5).lean(),
+                Booking.aggregate([
+                    { $match: { paymentStatus: 'paid', createdAt: { $gte: startOf12MonthsAgo } } },
+                    { $group: { _id: { year: { $year: '$createdAt' }, month: { $month: '$createdAt' } }, total: { $sum: '$totalPrice' } } }
+                ]),
+                Order.aggregate([
+                    { $match: { status: 'SUCCESS', createdAt: { $gte: startOf12MonthsAgo } } },
+                    { $group: { _id: { year: { $year: '$createdAt' }, month: { $month: '$createdAt' } }, total: { $sum: '$amount' } } }
+                ]),
+                CreatorSubscriptionTransaction.aggregate([
+                    { $match: { status: 'success', createdAt: { $gte: startOf12MonthsAgo } } },
+                    { $group: { _id: { year: { $year: '$createdAt' }, month: { $month: '$createdAt' } }, total: { $sum: '$amount' } } }
+                ]),
+                Wallet.findOne({ isSystem: true })
+            ]);
+            // Calculate percentage changes
+            const usersChange = usersLastMonth > 0 ? Math.round(((totalUsers - usersLastMonth) / usersLastMonth) * 100) : 0;
+            const hotelsChange = hotelsLastMonth > 0 ? Math.round(((totalHotels - hotelsLastMonth) / hotelsLastMonth) * 100) : 0;
+            const tripsChange = tripsLastMonth > 0 ? Math.round(((tripsThisMonth - tripsLastMonth) / tripsLastMonth) * 100) : 0;
+            const bookingsChange = bookingsLastMonth > 0 ? Math.round(((bookingsThisMonth - bookingsLastMonth) / bookingsLastMonth) * 100) : 0;
+            // Revenue totals (bookings commission is 10%)
+            const totalBookingRevenue = (bookingRevenue[0]?.total || 0) * 0.1;
+            const totalOrderRevenue = orderRevenue[0]?.total || 0;
+            const totalCreatorRevenue = creatorRevenue[0]?.total || 0;
+            const totalRevenue = totalBookingRevenue + totalOrderRevenue + totalCreatorRevenue;
+            // Revenue this month
+            const revenueThisMonth = ((bookingRevenueThisMonth[0]?.total || 0) * 0.1) +
+                (orderRevenueThisMonth[0]?.total || 0) +
+                (creatorRevenueThisMonth[0]?.total || 0);
+            // Revenue last month
+            const revLastMonth = ((bookingRevenueLastMonth[0]?.total || 0) * 0.1) +
+                (orderRevenueLastMonth[0]?.total || 0) +
+                (creatorRevenueLastMonth[0]?.total || 0);
+            const revenueChange = revLastMonth > 0 ? Math.round(((revenueThisMonth - revLastMonth) / revLastMonth) * 100) : 0;
+            // Batch query details for recent bookings to prevent N+1 queries
+            const userIds = recentBookings.map((b) => b.userId);
+            const hotelIds = recentBookings.map((b) => b.hotelId);
+            const [usersList, hotelsList] = await Promise.all([
+                User.find({ userId: { $in: userIds } }).lean(),
+                Hotel.find({ hotelId: { $in: hotelIds } }).lean()
+            ]);
+            const userMap = new Map(usersList.map((u) => [u.userId, u]));
+            const hotelMap = new Map(hotelsList.map((h) => [h.hotelId, h]));
+            const populatedBookings = recentBookings.map((b) => {
+                const user = userMap.get(b.userId);
+                const hotel = hotelMap.get(b.hotelId);
+                return {
+                    id: b.bookingId,
+                    user: user?.displayName || b.guestInfo?.fullName || 'N/A',
+                    userAvatar: user?.image || null,
+                    destination: hotel?.name || 'N/A',
+                    date: new Date(b.createdAt).toLocaleDateString('vi-VN'),
+                    amount: b.totalPrice,
+                    status: b.status === 'confirmed' || b.status === 'completed' ? 'Hoàn thành'
+                        : b.status === 'pending' ? 'Đang xử lý'
+                            : b.status === 'cancelled' ? 'Hủy' : b.status,
+                };
+            });
+            // Map monthly stats efficiently in memory
+            const bMap = new Map(bMonthly.map((item) => [`${item._id.year}-${item._id.month}`, item.total || 0]));
+            const oMap = new Map(oMonthly.map((item) => [`${item._id.year}-${item._id.month}`, item.total || 0]));
+            const cMap = new Map(cMonthly.map((item) => [`${item._id.year}-${item._id.month}`, item.total || 0]));
+            const monthlyRevenueList = [];
+            const monthlyRevenueBreakdown = [];
+            for (let i = 11; i >= 0; i--) {
+                const targetDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                const y = targetDate.getFullYear();
+                const m = targetDate.getMonth() + 1; // 1-indexed
+                const key = `${y}-${m}`;
+                const bookingVal = (bMap.get(key) || 0) * 0.1;
+                const orderVal = oMap.get(key) || 0;
+                const creatorVal = cMap.get(key) || 0;
+                const totalVal = bookingVal + orderVal + creatorVal;
+                monthlyRevenueList.push(totalVal);
+                monthlyRevenueBreakdown.push({
+                    booking: bookingVal,
+                    order: orderVal,
+                    creator: creatorVal,
+                    total: totalVal
+                });
+            }
             const adminWalletBalance = adminWallet?.balance || 0;
             res.json({
                 success: true,
                 data: {
                     totalUsers,
                     usersChange,
+                    totalHotels,
+                    hotelsChange,
+                    pendingHotelRequests,
+                    pendingWithdrawals,
                     tripsThisMonth,
                     tripsChange,
                     totalRevenue,
+                    totalBookingRevenue,
+                    totalOrderRevenue,
+                    totalCreatorRevenue,
                     revenueThisMonth,
                     revenueChange,
                     totalBookings,
                     bookingsThisMonth,
                     bookingsChange,
                     recentBookings: populatedBookings,
-                    monthlyRevenue,
+                    monthlyRevenue: monthlyRevenueList,
+                    monthlyRevenueBreakdown,
                     adminWalletBalance,
                 }
             });
@@ -221,5 +263,149 @@ exports.SystemController = {
             console.error('[Dashboard] Error:', error);
             res.status(500).json({ success: false, message: error.message });
         }
-    }
+    },
+    // GET /api/system/hotel-owners
+    getHotelOwners: async (req, res) => {
+        try {
+            const User = require('../models/user.model').default;
+            const Hotel = require('../models/hotel.model').default;
+            const Booking = require('../models/booking.model').default;
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 20;
+            const search = req.query.search;
+            const skip = (page - 1) * limit;
+            const userFilter = { role: 'hotel_owner' };
+            if (search) {
+                userFilter.$or = [
+                    { displayName: { $regex: search, $options: 'i' } },
+                    { email: { $regex: search, $options: 'i' } },
+                ];
+            }
+            const [owners, total] = await Promise.all([
+                User.find(userFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+                User.countDocuments(userFilter),
+            ]);
+            const enriched = await Promise.all(owners.map(async (owner) => {
+                const hotels = await Hotel.find({ ownerId: owner.userId })
+                    .select('hotelId name address.city starRating reviewSummary images')
+                    .lean();
+                const hotelIds = hotels.map((h) => h.hotelId);
+                const bookingStats = await Booking.aggregate([
+                    { $match: { hotelId: { $in: hotelIds } } },
+                    {
+                        $group: {
+                            _id: null,
+                            totalBookings: { $sum: 1 },
+                            totalRevenue: {
+                                $sum: { $cond: [{ $eq: ['$paymentStatus', 'paid'] }, '$totalPrice', 0] }
+                            },
+                            paidBookings: {
+                                $sum: { $cond: [{ $eq: ['$paymentStatus', 'paid'] }, 1, 0] }
+                            }
+                        }
+                    }
+                ]);
+                const stats = bookingStats[0] || { totalBookings: 0, totalRevenue: 0, paidBookings: 0 };
+                return {
+                    userId: owner.userId,
+                    displayName: owner.displayName,
+                    email: owner.email,
+                    image: owner.image,
+                    phone: owner.phone,
+                    createdAt: owner.createdAt,
+                    hotelCount: hotels.length,
+                    hotels: hotels.map((h) => ({
+                        hotelId: h.hotelId,
+                        name: h.name,
+                        city: h.address?.city || 'N/A',
+                        starRating: h.starRating,
+                        reviewScore: h.reviewSummary?.score || 0,
+                        reviewCount: h.reviewSummary?.count || 0,
+                        thumbnail: h.images?.[0] || null,
+                    })),
+                    totalBookings: stats.totalBookings,
+                    paidBookings: stats.paidBookings,
+                    totalRevenue: stats.totalRevenue,
+                };
+            }));
+            res.json({
+                success: true,
+                data: enriched,
+                pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+            });
+        }
+        catch (error) {
+            console.error('[HotelOwners] Error:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    },
+    // GET /api/system/point-topups
+    getPointTopups: async (req, res) => {
+        try {
+            const Topup = require('../models/topup.model').default;
+            const User = require('../models/user.model').default;
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 20;
+            const status = req.query.status;
+            const skip = (page - 1) * limit;
+            // Lọc các giao dịch nạp điểm từ store (bookingId bắt đầu bằng "topup_points_")
+            const filter = {
+                bookingId: { $regex: /^topup_points_/ }
+            };
+            if (status && ['pending', 'paid', 'cancelled'].includes(status)) {
+                filter.status = status;
+            }
+            const [transactions, total] = await Promise.all([
+                Topup.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+                Topup.countDocuments(filter),
+            ]);
+            // Join thông tin user
+            const enriched = await Promise.all(transactions.map(async (t) => {
+                const user = await User.findOne({ userId: t.userId }).select('displayName email').lean();
+                return {
+                    _id: t._id,
+                    bookingId: t.bookingId,
+                    orderCode: t.orderCode,
+                    userId: t.userId,
+                    displayName: user?.displayName || 'N/A',
+                    email: user?.email || 'N/A',
+                    amount: t.amount,
+                    pointsEarned: Math.floor(t.amount / 1000), // 1,000 VND = 1 điểm
+                    status: t.status,
+                    createdAt: t.createdAt,
+                };
+            }));
+            res.json({
+                success: true,
+                data: enriched,
+                pagination: {
+                    page,
+                    limit,
+                    total,
+                    totalPages: Math.ceil(total / limit),
+                },
+            });
+        }
+        catch (error) {
+            console.error('[PointTopups] Error:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    },
+    // POST /api/system/upload-image
+    // Upload ảnh lên Cloudinary, trả về URL
+    uploadImage: async (req, res) => {
+        try {
+            const file = req.file;
+            if (!file) {
+                return res.status(400).json({ success: false, message: 'Không có file nào được gửi lên' });
+            }
+            // multer-storage-cloudinary đã upload xong, URL nằm ở file.path
+            const imageUrl = file.path || file.secure_url;
+            res.json({ success: true, url: imageUrl });
+        }
+        catch (error) {
+            console.error('[UploadImage] Error:', error);
+            res.status(500).json({ success: false, message: error.message });
+        }
+    },
 };
